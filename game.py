@@ -1,4 +1,3 @@
-import math
 import random
 from dataclasses import dataclass
 
@@ -12,15 +11,17 @@ GRID_WIDTH = SCREEN_WIDTH // TILE_SIZE
 GRID_HEIGHT = SCREEN_HEIGHT // TILE_SIZE
 FPS = 60
 
-PLAYER_SPEED = 2.3
-ENEMY_SPEED = 1.5
+PLAYER_SPEED = 2.2
+ENEMY_SPEED = 1.45
 BULLET_SPEED = 6
-PLAYER_FIRE_COOLDOWN = 320
-ENEMY_FIRE_COOLDOWN_RANGE = (850, 1500)
+PLAYER_FIRE_COOLDOWN = 340
+ENEMY_FIRE_COOLDOWN_RANGE = (900, 1700)
 SPAWN_INTERVAL = 1800
 MAX_ACTIVE_ENEMIES = 6
 TOTAL_ENEMIES = 20
-
+PLAYER_LIVES = 3
+RESPAWN_INVULNERABLE_MS = 1300
+ENEMY_SPAWN_INVULNERABLE_MS = 900
 
 DIRECTION_VECTORS = {
     "up": (0, -1),
@@ -36,7 +37,8 @@ class Bullet:
     y: float
     direction: str
     owner: str
-
+    owner_id: int
+    power: int = 1
     width: int = 8
     height: int = 8
 
@@ -51,7 +53,11 @@ class Bullet:
 
 
 class Tank:
+    _id_seq = 0
+
     def __init__(self, x, y, color, speed, owner):
+        Tank._id_seq += 1
+        self.tank_id = Tank._id_seq
         self.x = x
         self.y = y
         self.width = 28
@@ -60,9 +66,9 @@ class Tank:
         self.speed = speed
         self.direction = "up"
         self.owner = owner
-        self.hp = 1
         self.alive = True
         self.last_shot_at = 0
+        self.spawn_protected_until = 0
 
     @property
     def rect(self):
@@ -81,25 +87,28 @@ class Tank:
     def _can_move_to(self, rect, walls, other_tanks):
         if rect.left < 0 or rect.right > SCREEN_WIDTH or rect.top < 0 or rect.bottom > SCREEN_HEIGHT:
             return False
+
         for wall in walls:
-            if wall.solid and rect.colliderect(wall.rect):
+            if wall.solid and wall.alive and rect.colliderect(wall.rect):
                 return False
+
         for tank in other_tanks:
             if tank is self or not tank.alive:
                 continue
             if rect.colliderect(tank.rect):
                 return False
+
         return True
 
     def fire(self, now):
-        if now - self.last_shot_at < PLAYER_FIRE_COOLDOWN and self.owner == "player":
+        if self.owner == "player" and now - self.last_shot_at < PLAYER_FIRE_COOLDOWN:
             return None
-        self.last_shot_at = now
 
+        self.last_shot_at = now
         dx, dy = DIRECTION_VECTORS[self.direction]
         bullet_x = self.x + self.width / 2 - 4 + dx * 14
         bullet_y = self.y + self.height / 2 - 4 + dy * 14
-        return Bullet(bullet_x, bullet_y, self.direction, self.owner)
+        return Bullet(bullet_x, bullet_y, self.direction, self.owner, self.tank_id)
 
 
 class EnemyTank(Tank):
@@ -111,9 +120,9 @@ class EnemyTank(Tank):
     def update_ai(self, now, walls, player, enemies):
         if now >= self.ai_switch_at:
             self.direction = random.choice(list(DIRECTION_VECTORS.keys()))
-            self.ai_switch_at = now + random.randint(400, 900)
+            self.ai_switch_at = now + random.randint(360, 860)
 
-        if random.random() < 0.08:
+        if random.random() < 0.09:
             self._try_face_player(player)
 
         self.move(self.direction, walls, enemies + [player])
@@ -137,12 +146,13 @@ class EnemyTank(Tank):
 @dataclass
 class Wall:
     rect: pygame.Rect
+    tile_type: str
     breakable: bool = False
     alive: bool = True
 
     @property
     def solid(self):
-        return self.alive
+        return self.tile_type in {"brick", "steel", "water"}
 
 
 class Base:
@@ -154,17 +164,24 @@ class Base:
 class Game:
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption("Battle City Lite - Python")
+        pygame.display.set_caption("Battle City Lite")
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("Arial", 24)
-        self.big_font = pygame.font.SysFont("Arial", 42, bold=True)
+
+        self.supports_cjk = self._supports_cjk_font()
+        self.font = self._create_font(23)
+        self.big_font = self._create_font(42, bold=True)
 
         self.base = Base(SCREEN_WIDTH // 2 - TILE_SIZE // 2, SCREEN_HEIGHT - TILE_SIZE * 2)
+        self.player_spawn = (SCREEN_WIDTH // 2 - 14, SCREEN_HEIGHT - TILE_SIZE * 4)
+
         self.walls = self._build_map()
-        self.player = Tank(SCREEN_WIDTH // 2 - 14, SCREEN_HEIGHT - TILE_SIZE * 4, (80, 170, 220), PLAYER_SPEED, "player")
+        self.player = Tank(self.player_spawn[0], self.player_spawn[1], (90, 180, 235), PLAYER_SPEED, "player")
         self.enemies = []
         self.bullets = []
+
+        self.player_lives = PLAYER_LIVES
+        self.player_invulnerable_until = 0
 
         self.enemies_spawned = 0
         self.enemies_destroyed = 0
@@ -172,29 +189,67 @@ class Game:
         self.game_over = False
         self.victory = False
 
+    def _supports_cjk_font(self):
+        cjk_candidates = [
+            "Noto Sans CJK SC",
+            "Microsoft YaHei",
+            "SimHei",
+            "PingFang SC",
+            "WenQuanYi Zen Hei",
+            "Arial Unicode MS",
+        ]
+        return any(pygame.font.match_font(name) for name in cjk_candidates)
+
+    def _create_font(self, size, bold=False):
+        if self.supports_cjk:
+            font_order = [
+                "Noto Sans CJK SC",
+                "Microsoft YaHei",
+                "SimHei",
+                "PingFang SC",
+                "WenQuanYi Zen Hei",
+                "Arial Unicode MS",
+                "Arial",
+            ]
+            return pygame.font.SysFont(font_order, size, bold=bold)
+        return pygame.font.SysFont("Arial", size, bold=bold)
+
     def _build_map(self):
         walls = []
-        # 场景四周钢墙
+
+        # 边界钢墙
         for gx in range(GRID_WIDTH):
-            walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 0, TILE_SIZE, TILE_SIZE), breakable=False))
-            walls.append(Wall(pygame.Rect(gx * TILE_SIZE, SCREEN_HEIGHT - TILE_SIZE, TILE_SIZE, TILE_SIZE), breakable=False))
+            walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 0, TILE_SIZE, TILE_SIZE), "steel"))
+            walls.append(Wall(pygame.Rect(gx * TILE_SIZE, SCREEN_HEIGHT - TILE_SIZE, TILE_SIZE, TILE_SIZE), "steel"))
         for gy in range(1, GRID_HEIGHT - 1):
-            walls.append(Wall(pygame.Rect(0, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), breakable=False))
-            walls.append(Wall(pygame.Rect(SCREEN_WIDTH - TILE_SIZE, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), breakable=False))
+            walls.append(Wall(pygame.Rect(0, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), "steel"))
+            walls.append(Wall(pygame.Rect(SCREEN_WIDTH - TILE_SIZE, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), "steel"))
 
-        # 中间砖墙障碍
+        # 中场砖墙
         for gy in [5, 7, 9, 11]:
-            for gx in range(4, GRID_WIDTH - 4):
+            for gx in range(3, GRID_WIDTH - 3):
                 if gx % 2 == 0:
-                    walls.append(Wall(pygame.Rect(gx * TILE_SIZE, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), breakable=True))
+                    walls.append(Wall(pygame.Rect(gx * TILE_SIZE, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), "brick", breakable=True))
 
-        # 基地防御墙
+        # 河流阻挡（更像经典关卡）
+        for gx in [10, 11, 14, 15]:
+            walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 10 * TILE_SIZE, TILE_SIZE, TILE_SIZE), "water"))
+
+        # 可穿越草地
+        for gx in [6, 7, 18, 19]:
+            walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 8 * TILE_SIZE, TILE_SIZE, TILE_SIZE), "grass"))
+            walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 12 * TILE_SIZE, TILE_SIZE, TILE_SIZE), "grass"))
+
+        # 基地砖墙保护（留上方入口）
         base_x = self.base.rect.x // TILE_SIZE
         base_y = self.base.rect.y // TILE_SIZE
         for ox, oy in [(-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]:
-            walls.append(Wall(pygame.Rect((base_x + ox) * TILE_SIZE, (base_y + oy) * TILE_SIZE, TILE_SIZE, TILE_SIZE), breakable=True))
+            walls.append(Wall(pygame.Rect((base_x + ox) * TILE_SIZE, (base_y + oy) * TILE_SIZE, TILE_SIZE, TILE_SIZE), "brick", breakable=True))
 
         return walls
+
+    def _owner_has_active_bullet(self, owner_id):
+        return any(b.owner_id == owner_id for b in self.bullets)
 
     def spawn_enemy(self, now):
         if self.enemies_spawned >= TOTAL_ENEMIES:
@@ -210,23 +265,31 @@ class Game:
             (SCREEN_WIDTH - TILE_SIZE * 3, TILE_SIZE * 2),
         ]
         random.shuffle(spawn_points)
+
         for sx, sy in spawn_points:
-            ghost = EnemyTank(sx, sy)
-            blocked = any(ghost.rect.colliderect(w.rect) and w.solid for w in self.walls)
+            enemy = EnemyTank(sx, sy)
+            blocked = any(enemy.rect.colliderect(w.rect) and w.solid and w.alive for w in self.walls)
             if blocked:
                 continue
-            conflict_player = ghost.rect.colliderect(self.player.rect)
-            conflict_enemies = any(ghost.rect.colliderect(e.rect) for e in self.enemies if e.alive)
-            if conflict_player or conflict_enemies:
+            if enemy.rect.colliderect(self.player.rect):
                 continue
-            self.enemies.append(ghost)
+            if any(enemy.rect.colliderect(e.rect) for e in self.enemies if e.alive):
+                continue
+
+            enemy.spawn_protected_until = now + ENEMY_SPAWN_INVULNERABLE_MS
+            self.enemies.append(enemy)
             self.enemies_spawned += 1
             self.next_spawn_at = now + SPAWN_INTERVAL
             return
 
         self.next_spawn_at = now + 300
 
-    def update(self, dt, now):
+    def _respawn_player(self, now):
+        self.player.x, self.player.y = self.player_spawn
+        self.player.direction = "up"
+        self.player_invulnerable_until = now + RESPAWN_INVULNERABLE_MS
+
+    def update(self, now):
         if self.game_over:
             return
 
@@ -246,9 +309,12 @@ class Game:
         for enemy in self.enemies:
             if not enemy.alive:
                 continue
-            bullet = enemy.update_ai(now, self.walls, self.player, self.enemies)
-            if bullet:
-                self.bullets.append(bullet)
+            if not self._owner_has_active_bullet(enemy.tank_id):
+                bullet = enemy.update_ai(now, self.walls, self.player, self.enemies)
+                if bullet:
+                    self.bullets.append(bullet)
+            else:
+                enemy.move(enemy.direction, self.walls, self.enemies + [self.player])
 
         for bullet in list(self.bullets):
             bullet.update()
@@ -257,9 +323,26 @@ class Game:
                 continue
 
             hit = False
+
+            # 子弹互撞
+            for other in list(self.bullets):
+                if other is bullet:
+                    continue
+                if bullet.rect.colliderect(other.rect):
+                    if bullet in self.bullets:
+                        self.bullets.remove(bullet)
+                    if other in self.bullets:
+                        self.bullets.remove(other)
+                    hit = True
+                    break
+            if hit:
+                continue
+
             for wall in self.walls:
-                if wall.alive and bullet.rect.colliderect(wall.rect):
-                    if wall.breakable:
+                if not wall.alive:
+                    continue
+                if bullet.rect.colliderect(wall.rect):
+                    if wall.tile_type == "brick" and wall.breakable:
                         wall.alive = False
                     hit = True
                     break
@@ -276,69 +359,136 @@ class Game:
 
             if bullet.owner == "player":
                 for enemy in self.enemies:
-                    if enemy.alive and bullet.rect.colliderect(enemy.rect):
+                    if not enemy.alive:
+                        continue
+                    if now < enemy.spawn_protected_until:
+                        continue
+                    if bullet.rect.colliderect(enemy.rect):
                         enemy.alive = False
                         self.enemies_destroyed += 1
                         hit = True
                         break
             else:
                 if self.player.alive and bullet.rect.colliderect(self.player.rect):
-                    self.player.alive = False
+                    if now >= self.player_invulnerable_until:
+                        self.player_lives -= 1
+                        if self.player_lives <= 0:
+                            self.player.alive = False
+                            self.game_over = True
+                            self.victory = False
+                        else:
+                            self._respawn_player(now)
                     hit = True
-                    self.game_over = True
-                    self.victory = False
 
             if hit and bullet in self.bullets:
                 self.bullets.remove(bullet)
 
-        if self.enemies_destroyed >= TOTAL_ENEMIES:
+        if self.base.alive and self.enemies_destroyed >= TOTAL_ENEMIES:
             self.game_over = True
             self.victory = True
 
-    def draw(self):
+    def draw(self, now):
         self.screen.fill((35, 40, 45))
 
+        # 先画可穿越草地下层
         for wall in self.walls:
-            if not wall.alive:
+            if wall.tile_type == "grass" and wall.alive:
+                pygame.draw.rect(self.screen, (75, 120, 70), wall.rect)
+
+        for wall in self.walls:
+            if not wall.alive or wall.tile_type == "grass":
                 continue
-            color = (180, 120, 70) if wall.breakable else (120, 125, 135)
+            if wall.tile_type == "brick":
+                color = (180, 120, 70)
+            elif wall.tile_type == "steel":
+                color = (120, 125, 135)
+            elif wall.tile_type == "water":
+                color = (55, 95, 165)
+            else:
+                color = (120, 125, 135)
             pygame.draw.rect(self.screen, color, wall.rect)
 
-        if self.base.alive:
-            pygame.draw.rect(self.screen, (230, 210, 70), self.base.rect)
-            pygame.draw.rect(self.screen, (50, 50, 20), self.base.rect, 2)
+        self._draw_base()
 
         if self.player.alive:
-            self._draw_tank(self.player)
+            self._draw_tank(self.player, now)
 
         for enemy in self.enemies:
             if enemy.alive:
-                self._draw_tank(enemy)
+                self._draw_tank(enemy, now)
 
         for bullet in self.bullets:
             pygame.draw.rect(self.screen, (245, 245, 245), bullet.rect)
 
-        info = f"敌方总数: {TOTAL_ENEMIES}  已击毁: {self.enemies_destroyed}  剩余: {TOTAL_ENEMIES - self.enemies_destroyed}"
-        text_surface = self.font.render(info, True, (235, 235, 235))
-        self.screen.blit(text_surface, (20, 10))
+        # 草丛遮挡在坦克上层，模拟经典效果
+        for wall in self.walls:
+            if wall.tile_type == "grass" and wall.alive:
+                pygame.draw.rect(self.screen, (88, 145, 82), wall.rect)
+
+        self._draw_hud()
 
         if self.game_over:
-            msg = "胜利！你守住了基地" if self.victory else "失败！基地或我方坦克被摧毁"
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 130))
-            self.screen.blit(overlay, (0, 0))
-            over_surface = self.big_font.render(msg, True, (255, 255, 255))
-            self.screen.blit(over_surface, (SCREEN_WIDTH // 2 - over_surface.get_width() // 2, SCREEN_HEIGHT // 2 - 40))
-            tip = self.font.render("按 R 重新开始，按 ESC 退出", True, (255, 255, 255))
-            self.screen.blit(tip, (SCREEN_WIDTH // 2 - tip.get_width() // 2, SCREEN_HEIGHT // 2 + 18))
+            self._draw_game_over_overlay()
 
         pygame.display.flip()
 
-    def _draw_tank(self, tank):
+    def _draw_base(self):
+        if not self.base.alive:
+            pygame.draw.rect(self.screen, (90, 45, 45), self.base.rect)
+            return
+        pygame.draw.rect(self.screen, (230, 210, 70), self.base.rect)
+        pygame.draw.rect(self.screen, (40, 40, 20), self.base.rect, 2)
+        cx, cy = self.base.rect.center
+        pygame.draw.polygon(self.screen, (40, 40, 20), [(cx - 7, cy + 6), (cx, cy - 8), (cx + 7, cy + 6)])
+
+    def _draw_hud(self):
+        if self.supports_cjk:
+            text = (
+                f"生命: {self.player_lives}  敌方总数: {TOTAL_ENEMIES}  "
+                f"已击毁: {self.enemies_destroyed}  剩余: {TOTAL_ENEMIES - self.enemies_destroyed}"
+            )
+        else:
+            text = (
+                f"Lives: {self.player_lives}  Enemies: {TOTAL_ENEMIES}  "
+                f"Destroyed: {self.enemies_destroyed}  Left: {TOTAL_ENEMIES - self.enemies_destroyed}"
+            )
+
+        surf = self.font.render(text, True, (235, 235, 235))
+        self.screen.blit(surf, (20, 10))
+
+    def _draw_game_over_overlay(self):
+        if self.supports_cjk:
+            msg = "胜利！基地守住了" if self.victory else "失败！基地被毁或生命归零"
+            tip_text = "按 R 重新开始，按 ESC 退出"
+        else:
+            msg = "Victory! Base Defended" if self.victory else "Defeat! Base destroyed or no lives"
+            tip_text = "Press R to restart, ESC to quit"
+
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 130))
+        self.screen.blit(overlay, (0, 0))
+
+        over_surface = self.big_font.render(msg, True, (255, 255, 255))
+        self.screen.blit(over_surface, (SCREEN_WIDTH // 2 - over_surface.get_width() // 2, SCREEN_HEIGHT // 2 - 40))
+
+        tip = self.font.render(tip_text, True, (255, 255, 255))
+        self.screen.blit(tip, (SCREEN_WIDTH // 2 - tip.get_width() // 2, SCREEN_HEIGHT // 2 + 18))
+
+    def _draw_tank(self, tank, now):
         body = tank.rect
-        pygame.draw.rect(self.screen, tank.color, body)
-        turret_color = (20, 20, 20)
+        color = tank.color
+
+        # 重生/出生保护闪烁
+        if tank.owner == "player" and now < self.player_invulnerable_until:
+            if (now // 100) % 2 == 0:
+                color = (255, 255, 255)
+        if tank.owner == "enemy" and now < tank.spawn_protected_until:
+            if (now // 100) % 2 == 0:
+                color = (250, 250, 250)
+
+        pygame.draw.rect(self.screen, color, body)
         center_x, center_y = body.center
+
         if tank.direction == "up":
             muzzle = (center_x, body.top - 8)
         elif tank.direction == "down":
@@ -347,7 +497,8 @@ class Game:
             muzzle = (body.left - 8, center_y)
         else:
             muzzle = (body.right + 8, center_y)
-        pygame.draw.line(self.screen, turret_color, (center_x, center_y), muzzle, 4)
+
+        pygame.draw.line(self.screen, (20, 20, 20), (center_x, center_y), muzzle, 4)
         pygame.draw.circle(self.screen, (225, 225, 225), (center_x, center_y), 4)
 
     def reset(self):
@@ -356,7 +507,7 @@ class Game:
     def run(self):
         running = True
         while running:
-            dt = self.clock.tick(FPS)
+            self.clock.tick(FPS)
             now = pygame.time.get_ticks()
 
             for event in pygame.event.get():
@@ -366,14 +517,15 @@ class Game:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_SPACE and self.player.alive and not self.game_over:
-                        bullet = self.player.fire(now)
-                        if bullet:
-                            self.bullets.append(bullet)
+                        if not self._owner_has_active_bullet(self.player.tank_id):
+                            bullet = self.player.fire(now)
+                            if bullet:
+                                self.bullets.append(bullet)
                     elif event.key == pygame.K_r and self.game_over:
                         self.reset()
 
-            self.update(dt, now)
-            self.draw()
+            self.update(now)
+            self.draw(now)
 
         pygame.quit()
 
