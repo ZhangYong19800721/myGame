@@ -503,15 +503,15 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                elif event.type == pygame.KEYDOWN:
+                elif event.type in (pygame.KEYDOWN, pygame.KEYUP):
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif self.game_over:
-                        # If game over, restart on any non-ESC key to avoid layout/IME issues.
+                        # Restart on any non-ESC key (KEYDOWN or KEYUP) to be robust.
                         self.reset_state(now)
-                    elif event.key == pygame.K_r:
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                         self.reset_state(now)
-                    elif event.key == pygame.K_SPACE and self.player.alive and not self.game_over:
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE and self.player.alive and not self.game_over:
                         if not self._owner_has_active_bullet(self.player.tank_id):
                             bullet = self.player.fire(now)
                             if bullet:
