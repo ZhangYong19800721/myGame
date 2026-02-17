@@ -288,6 +288,9 @@ class Game:
 
     def update(self, now):
         if self.game_over:
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_r]:
+                self.reset_state(now)
             return
 
         self.spawn_enemy(now)
@@ -503,13 +506,20 @@ class Game:
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
+                    elif self.game_over:
+                        # If game over, restart on any non-ESC key to avoid layout/IME issues.
+                        self.reset_state(now)
+                    elif event.key == pygame.K_r:
+                        self.reset_state(now)
                     elif event.key == pygame.K_SPACE and self.player.alive and not self.game_over:
                         if not self._owner_has_active_bullet(self.player.tank_id):
                             bullet = self.player.fire(now)
                             if bullet:
                                 self.bullets.append(bullet)
-                    elif event.key == pygame.K_r and self.game_over:
-                        self.reset_state(now)
+
+            pygame.event.pump()
+            if self.game_over and pygame.key.get_pressed()[pygame.K_r]:
+                self.reset_state(now)
 
             self.update(now)
             self.draw(now)
