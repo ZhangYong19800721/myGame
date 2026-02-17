@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 import random
 from dataclasses import dataclass
 
@@ -168,10 +169,14 @@ class Game:
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         self.clock = pygame.time.Clock()
 
-        self.supports_cjk = self._supports_cjk_font()
+        self.supports_cjk = False
         self.font = self._create_font(23)
         self.big_font = self._create_font(42, bold=True)
 
+        self.reset_state(pygame.time.get_ticks())
+
+    def reset_state(self, now):
+        Tank._id_seq = 0
         self.base = Base(SCREEN_WIDTH // 2 - TILE_SIZE // 2, SCREEN_HEIGHT - TILE_SIZE * 2)
         self.player_spawn = (SCREEN_WIDTH // 2 - 14, SCREEN_HEIGHT - TILE_SIZE * 4)
 
@@ -181,7 +186,7 @@ class Game:
         self.bullets = []
 
         self.player_lives = PLAYER_LIVES
-        self.player_invulnerable_until = 0
+        self.player_invulnerable_until = now + RESPAWN_INVULNERABLE_MS
 
         self.enemies_spawned = 0
         self.enemies_destroyed = 0
@@ -190,15 +195,7 @@ class Game:
         self.victory = False
 
     def _supports_cjk_font(self):
-        cjk_candidates = [
-            "Noto Sans CJK SC",
-            "Microsoft YaHei",
-            "SimHei",
-            "PingFang SC",
-            "WenQuanYi Zen Hei",
-            "Arial Unicode MS",
-        ]
-        return any(pygame.font.match_font(name) for name in cjk_candidates)
+        return False
 
     def _create_font(self, size, bold=False):
         if self.supports_cjk:
@@ -217,7 +214,7 @@ class Game:
     def _build_map(self):
         walls = []
 
-        # 边界钢墙
+        # Map borders
         for gx in range(GRID_WIDTH):
             walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 0, TILE_SIZE, TILE_SIZE), "steel"))
             walls.append(Wall(pygame.Rect(gx * TILE_SIZE, SCREEN_HEIGHT - TILE_SIZE, TILE_SIZE, TILE_SIZE), "steel"))
@@ -225,22 +222,22 @@ class Game:
             walls.append(Wall(pygame.Rect(0, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), "steel"))
             walls.append(Wall(pygame.Rect(SCREEN_WIDTH - TILE_SIZE, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), "steel"))
 
-        # 中场砖墙
+        # Middle brick walls
         for gy in [5, 7, 9, 11]:
             for gx in range(3, GRID_WIDTH - 3):
                 if gx % 2 == 0:
                     walls.append(Wall(pygame.Rect(gx * TILE_SIZE, gy * TILE_SIZE, TILE_SIZE, TILE_SIZE), "brick", breakable=True))
 
-        # 河流阻挡（更像经典关卡）
+        # River obstacles
         for gx in [10, 11, 14, 15]:
             walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 10 * TILE_SIZE, TILE_SIZE, TILE_SIZE), "water"))
 
-        # 可穿越草地
+        # Grass tiles (passable)
         for gx in [6, 7, 18, 19]:
             walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 8 * TILE_SIZE, TILE_SIZE, TILE_SIZE), "grass"))
             walls.append(Wall(pygame.Rect(gx * TILE_SIZE, 12 * TILE_SIZE, TILE_SIZE, TILE_SIZE), "grass"))
 
-        # 基地砖墙保护（留上方入口）
+        # Base protection (leave top opening)
         base_x = self.base.rect.x // TILE_SIZE
         base_y = self.base.rect.y // TILE_SIZE
         for ox, oy in [(-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]:
@@ -324,7 +321,7 @@ class Game:
 
             hit = False
 
-            # 子弹互撞
+            # Bullet collision
             for other in list(self.bullets):
                 if other is bullet:
                     continue
@@ -390,7 +387,7 @@ class Game:
     def draw(self, now):
         self.screen.fill((35, 40, 45))
 
-        # 先画可穿越草地下层
+        # ?
         for wall in self.walls:
             if wall.tile_type == "grass" and wall.alive:
                 pygame.draw.rect(self.screen, (75, 120, 70), wall.rect)
@@ -420,7 +417,7 @@ class Game:
         for bullet in self.bullets:
             pygame.draw.rect(self.screen, (245, 245, 245), bullet.rect)
 
-        # 草丛遮挡在坦克上层，模拟经典效果
+        # Draw grass above tanks
         for wall in self.walls:
             if wall.tile_type == "grass" and wall.alive:
                 pygame.draw.rect(self.screen, (88, 145, 82), wall.rect)
@@ -442,27 +439,17 @@ class Game:
         pygame.draw.polygon(self.screen, (40, 40, 20), [(cx - 7, cy + 6), (cx, cy - 8), (cx + 7, cy + 6)])
 
     def _draw_hud(self):
-        if self.supports_cjk:
-            text = (
-                f"生命: {self.player_lives}  敌方总数: {TOTAL_ENEMIES}  "
-                f"已击毁: {self.enemies_destroyed}  剩余: {TOTAL_ENEMIES - self.enemies_destroyed}"
-            )
-        else:
-            text = (
-                f"Lives: {self.player_lives}  Enemies: {TOTAL_ENEMIES}  "
-                f"Destroyed: {self.enemies_destroyed}  Left: {TOTAL_ENEMIES - self.enemies_destroyed}"
-            )
+        text = (
+            f"Lives: {self.player_lives}  Enemies: {TOTAL_ENEMIES}  "
+            f"Destroyed: {self.enemies_destroyed}  Left: {TOTAL_ENEMIES - self.enemies_destroyed}"
+        )
 
         surf = self.font.render(text, True, (235, 235, 235))
         self.screen.blit(surf, (20, 10))
 
     def _draw_game_over_overlay(self):
-        if self.supports_cjk:
-            msg = "胜利！基地守住了" if self.victory else "失败！基地被毁或生命归零"
-            tip_text = "按 R 重新开始，按 ESC 退出"
-        else:
-            msg = "Victory! Base Defended" if self.victory else "Defeat! Base destroyed or no lives"
-            tip_text = "Press R to restart, ESC to quit"
+        msg = "Victory! Base Defended" if self.victory else "Defeat! Base destroyed or no lives"
+        tip_text = "Press R to restart, ESC to quit"
 
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 130))
@@ -478,7 +465,7 @@ class Game:
         body = tank.rect
         color = tank.color
 
-        # 重生/出生保护闪烁
+        # Respawn/invulnerability blink
         if tank.owner == "player" and now < self.player_invulnerable_until:
             if (now // 100) % 2 == 0:
                 color = (255, 255, 255)
@@ -502,7 +489,7 @@ class Game:
         pygame.draw.circle(self.screen, (225, 225, 225), (center_x, center_y), 4)
 
     def reset(self):
-        self.__init__()
+        self.reset_state(pygame.time.get_ticks())
 
     def run(self):
         running = True
@@ -522,7 +509,7 @@ class Game:
                             if bullet:
                                 self.bullets.append(bullet)
                     elif event.key == pygame.K_r and self.game_over:
-                        self.reset()
+                        self.reset_state(now)
 
             self.update(now)
             self.draw(now)
@@ -532,3 +519,4 @@ class Game:
 
 if __name__ == "__main__":
     Game().run()
+
